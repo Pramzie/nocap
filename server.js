@@ -1,39 +1,54 @@
 // ============================================================
-//  server.js  –  Place this at the ROOT of your project
-//  (same level as package.json)
-//
-//  Install deps:  npm install express cors @anthropic-ai/sdk dotenv
-//  Run:           node server.js
-//
+//  server.js  –  Uses FREE Google Gemini API
 //  Required .env variables:
-//    ANTHROPIC_API_KEY=sk-ant-...
-//    PORT=3001   (optional, defaults to 3001)
+//    GEMINI_API_KEY=your-key-from-aistudio.google.com
+//    PORT=3001
 // ============================================================
 
 import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
-import Anthropic from '@anthropic-ai/sdk';
 
 const app  = express();
 const PORT = process.env.PORT ?? 3001;
 
-const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-
 app.use(cors());
-app.use(express.json({ limit: '20mb' })); // images can be large
+app.use(express.json({ limit: '20mb' }));
 
-// ── Helpers ──────────────────────────────────────────────────
+// ── Gemini helper ─────────────────────────────────────────────
+async function callGemini(prompt, imageBase64 = null, imageMimeType = null) {
+  const parts = [];
+
+  if (imageBase64) {
+    parts.push({ inline_data: { mime_type: imageMimeType, data: imageBase64 } });
+  }
+
+  parts.push({ text: prompt });
+
+  const res = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${process.env.GEMINI_API_KEY}`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ contents: [{ parts }] }),
+    }
+  );
+
+  const data = await res.json();
+
+  if (!res.ok) {
+    throw new Error(JSON.stringify(data));
+  }
+
+  return data.candidates[0].content.parts[0].text;
+}
 
 function parseJsonSafe(text) {
-  // Strip markdown fences if Claude wrapped the JSON
   const clean = text.replace(/```json|```/g, '').trim();
   return JSON.parse(clean);
 }
 
 // ── POST /api/verify/text ─────────────────────────────────────
-// Body: { text?: string, url?: string }
-// Returns: VerificationResponse
 app.post('/api/verify/text', async (req, res) => {
   const { text, url } = req.body;
 
@@ -41,39 +56,38 @@ app.post('/api/verify/text', async (req, res) => {
     return res.status(400).json({ error: 'Provide text or url' });
   }
 
-  const userContent = text
-    ? `Analyze the following text and determine if it is AI-generated or human-written:\n\n${text}`
-    : `Analyze the content at this URL and determine if it is AI-generated or human-written:\n${url}`;
+  const prompt = `You are a content authenticity expert. Analyze the following ${url ? 'URL' : 'text'} and determine if it is AI-generated or human-written.
 
-  const systemPrompt = `You are a content authenticity expert. Analyze the given text and return ONLY a JSON object with this exact shape:
+${url ? `URL: ${url}` : `Text: ${text}`}
+
+Return ONLY a JSON object with this exact shape, no other text:
 {
-  "result": "authentic" | "fake",
-  "confidence": <number 0-100>,
-  "aiProbability": <number 0-100>,
-  "humanProbability": <number 0-100>,
-  "analysisTime": "<elapsed seconds e.g. '1.2s'>",
-  "detectionMethod": "<short description of method used>",
-  "findings": ["<finding 1>", "<finding 2>", "<finding 3>"]
+  "result": "authentic",
+  "confidence": 85,
+  "aiProbability": 15,
+  "humanProbability": 85,
+  "analysisTime": "1.2s",
+  "detectionMethod": "Linguistic pattern analysis",
+  "findings": [
+    "finding 1 about the text",
+    "finding 2 about the text",
+    "finding 3 about the text"
+  ]
 }
-"result" is "fake" if AI-generated, "authentic" if human-written.
-"confidence" is how confident you are in your verdict.
-"findings" should be 3 specific observations about the text that support your verdict.
-Return ONLY the JSON object, no other text.`;
+
+Rules:
+- "result" must be "fake" if AI-generated, "authentic" if human-written
+- "confidence" is how confident you are in your verdict (0-100)
+- "aiProbability" + "humanProbability" must add up to 100
+- "findings" must have exactly 3 specific observations that support your verdict
+- Return ONLY the JSON, absolutely no other text`;
 
   try {
-    const start = Date.now();
-    const message = await anthropic.messages.create({
-      model: 'claude-opus-4-6',
-      max_tokens: 512,
-      system: systemPrompt,
-      messages: [{ role: 'user', content: userContent }],
-    });
-
+    const start   = Date.now();
+    const rawText = await callGemini(prompt);
     const elapsed = ((Date.now() - start) / 1000).toFixed(1) + 's';
-    const rawText = message.content[0].text;
     const parsed  = parseJsonSafe(rawText);
-    parsed.analysisTime = parsed.analysisTime ?? elapsed;
-
+    parsed.analysisTime = elapsed;
     res.json(parsed);
   } catch (err) {
     console.error('Text verify error:', err);
@@ -82,8 +96,6 @@ Return ONLY the JSON object, no other text.`;
 });
 
 // ── POST /api/verify/image ────────────────────────────────────
-// Body: { imageBase64?: string, imageUrl?: string, context?: string }
-// Returns: VerificationResponse
 app.post('/api/verify/image', async (req, res) => {
   const { imageBase64, imageUrl, context } = req.body;
 
@@ -91,50 +103,46 @@ app.post('/api/verify/image', async (req, res) => {
     return res.status(400).json({ error: 'Provide imageBase64 or imageUrl' });
   }
 
-  const systemPrompt = `You are an image authenticity expert. Analyze the given image and return ONLY a JSON object with this exact shape:
+  const prompt = `You are an image authenticity expert. Analyze this image and determine if it is AI-generated/manipulated or a real photograph.
+${context ? `Context: ${context}` : ''}
+
+Return ONLY a JSON object with this exact shape, no other text:
 {
-  "result": "authentic" | "fake",
-  "confidence": <number 0-100>,
-  "aiProbability": <number 0-100>,
-  "humanProbability": <number 0-100>,
+  "result": "authentic",
+  "confidence": 85,
+  "aiProbability": 15,
+  "humanProbability": 85,
   "analysisTime": "1.5s",
-  "detectionMethod": "<short description>",
-  "findings": ["<finding 1>", "<finding 2>", "<finding 3>"]
+  "detectionMethod": "Visual artifact and metadata analysis",
+  "findings": [
+    "finding 1 about the image",
+    "finding 2 about the image",
+    "finding 3 about the image"
+  ]
 }
-"result" is "fake" if AI-generated/manipulated, "authentic" if a real photo.
-"findings" should be 3 specific visual observations.
-Return ONLY the JSON object, no other text.`;
 
-  // Build the image content block
-  let imageBlock;
-  if (imageBase64) {
-    // imageBase64 comes as a data-url: "data:image/png;base64,<data>"
-    const [meta, data] = imageBase64.split(',');
-    const mediaType    = meta.match(/:(.*?);/)?.[1] ?? 'image/jpeg';
-    imageBlock = { type: 'image', source: { type: 'base64', media_type: mediaType, data } };
-  } else {
-    imageBlock = { type: 'image', source: { type: 'url', url: imageUrl } };
-  }
-
-  const userContent = [
-    imageBlock,
-    { type: 'text', text: context ? `Context: ${context}\n\nAnalyze this image.` : 'Analyze this image.' },
-  ];
+Rules:
+- "result" must be "fake" if AI-generated or manipulated, "authentic" if a real photo
+- "confidence" is how confident you are (0-100)
+- "aiProbability" + "humanProbability" must add up to 100
+- "findings" must have exactly 3 specific visual observations
+- Return ONLY the JSON, absolutely no other text`;
 
   try {
-    const start = Date.now();
-    const message = await anthropic.messages.create({
-      model: 'claude-opus-4-6',
-      max_tokens: 512,
-      system: systemPrompt,
-      messages: [{ role: 'user', content: userContent }],
-    });
+    let base64Data = null;
+    let mimeType   = 'image/jpeg';
 
+    if (imageBase64) {
+      const [meta, data] = imageBase64.split(',');
+      mimeType   = meta.match(/:(.*?);/)?.[1] ?? 'image/jpeg';
+      base64Data = data;
+    }
+
+    const start   = Date.now();
+    const rawText = await callGemini(prompt, base64Data, mimeType);
     const elapsed = ((Date.now() - start) / 1000).toFixed(1) + 's';
-    const rawText = message.content[0].text;
     const parsed  = parseJsonSafe(rawText);
-    parsed.analysisTime = parsed.analysisTime ?? elapsed;
-
+    parsed.analysisTime = elapsed;
     res.json(parsed);
   } catch (err) {
     console.error('Image verify error:', err);
@@ -143,8 +151,6 @@ Return ONLY the JSON object, no other text.`;
 });
 
 // ── POST /api/chat ────────────────────────────────────────────
-// Body: { messages: Array<{ role: 'user'|'assistant', content: string }> }
-// Returns: { reply: string }
 app.post('/api/chat', async (req, res) => {
   const { messages } = req.body;
 
@@ -152,17 +158,19 @@ app.post('/api/chat', async (req, res) => {
     return res.status(400).json({ error: 'Provide a messages array' });
   }
 
-  try {
-    const response = await anthropic.messages.create({
-      model: 'claude-opus-4-6',
-      max_tokens: 512,
-      system: `You are noCap Assistant, a helpful AI embedded in the noCap content authenticity verifier app.
-You help users understand how to use the tool, explain what AI-generated content looks like, and answer questions about digital trust and misinformation.
-Keep responses concise (2-4 sentences). Be friendly and informative.`,
-      messages,
-    });
+  const history = messages
+    .map((m) => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content}`)
+    .join('\n');
 
-    res.json({ reply: response.content[0].text });
+  const prompt = `You are noCap Assistant, a helpful AI embedded in the noCap content authenticity verifier app. You help users understand how to use the tool, explain what AI-generated content looks like, and answer questions about digital trust and misinformation. Keep responses concise (2-4 sentences). Be friendly and informative.
+
+Conversation:
+${history}
+Assistant:`;
+
+  try {
+    const reply = await callGemini(prompt);
+    res.json({ reply: reply.trim() });
   } catch (err) {
     console.error('Chat error:', err);
     res.status(500).json({ error: err.message });
