@@ -5,7 +5,17 @@ import {
   Image as ImageIcon, X, Loader2, AlertCircle,
 } from 'lucide-react';
 import { VerificationReport } from './VerificationReport';
-import { VerificationResponse } from '../services/api';
+
+// ── Inline type — no backend needed ──
+interface VerificationResponse {
+  result: 'authentic' | 'fake';
+  confidence: number;
+  aiProbability: number;
+  humanProbability: number;
+  analysisTime: string;
+  detectionMethod: string;
+  findings: string[];
+}
 
 type VerificationType = 'text' | 'image';
 
@@ -41,7 +51,7 @@ export function VerificationBox() {
     reader.readAsDataURL(file);
   };
 
-  // ── Smart mock — no API needed, looks realistic ──
+  // ── Smart mock — no API, looks realistic ──
   const handleVerify = async () => {
     setIsVerifying(true);
     setVerificationResult(null);
@@ -54,7 +64,6 @@ export function VerificationBox() {
 
     if (verificationType === 'text') {
       const text = textInput.toLowerCase();
-      // Detect common AI writing patterns
       if (
         text.includes('certainly') || text.includes('absolutely') ||
         text.includes('furthermore') || text.includes('in conclusion') ||
@@ -64,12 +73,11 @@ export function VerificationBox() {
       ) {
         aiProbability = Math.floor(Math.random() * 20) + 75; // 75–95% AI
       } else if (text.length < 100) {
-        aiProbability = Math.floor(Math.random() * 25) + 15; // 15–40% (short = likely human)
+        aiProbability = Math.floor(Math.random() * 25) + 15; // 15–40% likely human
       } else {
         aiProbability = Math.floor(Math.random() * 40) + 30; // 30–70% random
       }
     } else {
-      // Images — randomised but weighted toward AI detection
       aiProbability = Math.floor(Math.random() * 60) + 20;
     }
 
@@ -128,7 +136,6 @@ export function VerificationBox() {
       className="w-full max-w-4xl mx-auto"
     >
       <div className="relative">
-        {/* Box tape strips */}
         <div className="absolute -top-4 left-1/2 -translate-x-1/2 w-32 h-8 bg-yellow-400 border-2 border-yellow-600 opacity-80 z-10" />
         <div className="absolute -bottom-4 left-1/2 -translate-x-1/2 w-32 h-8 bg-yellow-400 border-2 border-yellow-600 opacity-80 z-10" />
 
@@ -142,12 +149,10 @@ export function VerificationBox() {
             backgroundSize: '20px 20px',
           }}
         >
-          {/* Fragile sticker */}
           <div className="absolute top-4 right-4 bg-red-500 text-white px-3 py-1 rounded text-sm font-black rotate-3 border-2 border-red-700">
             FRAGILE ⚠
           </div>
 
-          {/* Type Selector */}
           <div className="flex gap-4 mb-6">
             {(['text', 'image'] as VerificationType[]).map((t) => (
               <button
@@ -165,7 +170,6 @@ export function VerificationBox() {
             ))}
           </div>
 
-          {/* Text Verification */}
           {verificationType === 'text' && (
             <div className="space-y-4">
               <div>
@@ -195,7 +199,6 @@ export function VerificationBox() {
             </div>
           )}
 
-          {/* Image Verification */}
           {verificationType === 'image' && (
             <div className="space-y-4">
               <div
@@ -249,7 +252,6 @@ export function VerificationBox() {
             </div>
           )}
 
-          {/* Verify Button */}
           <motion.button
             whileHover={{ scale: 1.05 }}
             whileTap={{ scale: 0.95 }}
@@ -267,7 +269,6 @@ export function VerificationBox() {
             )}
           </motion.button>
 
-          {/* Error state */}
           {error && (
             <motion.div
               initial={{ opacity: 0, y: 10 }}
@@ -279,7 +280,6 @@ export function VerificationBox() {
             </motion.div>
           )}
 
-          {/* Verification Report */}
           {verificationResult && (
             <VerificationReport
               result={verificationResult.result}
